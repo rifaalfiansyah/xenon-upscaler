@@ -33,6 +33,8 @@ const (
 )
 
 const (
+	// MaxInputBytes caps encoded input size (50 MiB) to protect browser memory.
+	MaxInputBytes = 50 << 20
 	// MaxOutputDimension caps width/height to prevent browser WASM OOM.
 	MaxOutputDimension = 8192
 	// MaxOutputPixels caps total output pixels (~33.5MP) to keep WASM heap safe.
@@ -58,10 +60,35 @@ type Result struct {
 	Format     Format
 }
 
+func validateDimensions(w, h int, label string) error {
+	if w <= 0 || h <= 0 {
+		return fmt.Errorf("%s has zero dimensions", label)
+	}
+	if w > MaxOutputDimension || h > MaxOutputDimension {
+		return fmt.Errorf("%s dimensions %dx%d exceed maximum %dpx per side", label, w, h, MaxOutputDimension)
+	}
+	if int64(w)*int64(h) > MaxOutputPixels {
+		return fmt.Errorf("%s resolution %dx%d exceeds maximum %d pixels", label, w, h, MaxOutputPixels)
+	}
+	return nil
+}
+
 // UpscaleBytes decodes an image from raw bytes, upscales it, and encodes it in the requested format.
 func UpscaleBytes(input []byte, opts Options) (*Result, error) {
 	if len(input) == 0 {
 		return nil, errors.New("empty image input")
+	}
+	if len(input) > MaxInputBytes {
+		return nil, fmt.Errorf("input size %d bytes exceeds maximum %d bytes", len(input), MaxInputBytes)
+	}
+
+	// Inspect header dimensions before full decode to guard against decompression bombs.
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(input))
+	if err != nil {
+		return nil, fmt.Errorf("decode image config: %w", err)
+	}
+	if err := validateDimensions(cfg.Width, cfg.Height, "source"); err != nil {
+		return nil, err
 	}
 
 	src, _, err := image.Decode(bytes.NewReader(input))
@@ -93,7 +120,7 @@ func UpscaleBytes(input []byte, opts Options) (*Result, error) {
 		if quality <= 0 {
 			quality = 90
 		}
-		quality = clampInt(quality, 1, 100)
+		quality = clamp(quality, 1, 100)
 		data, err = EncodeJPEG(dst, quality)
 		if err != nil {
 			return nil, fmt.Errorf("encode jpeg: %w", err)
@@ -148,11 +175,8 @@ func Upscale(src image.Image, opts Options) (*image.NRGBA, error) {
 	if dstH < 1 {
 		dstH = 1
 	}
-	if dstW > MaxOutputDimension || dstH > MaxOutputDimension {
-		return nil, fmt.Errorf("output dimensions %dx%d exceed maximum %dpx per side", dstW, dstH, MaxOutputDimension)
-	}
-	if int64(dstW)*int64(dstH) > MaxOutputPixels {
-		return nil, fmt.Errorf("output resolution %dx%d exceeds maximum %d pixels", dstW, dstH, MaxOutputPixels)
+	if err := validateDimensions(dstW, dstH, "output"); err != nil {
+		return nil, err
 	}
 
 	srcRGBA := toNRGBA(src)
@@ -172,8 +196,7 @@ func Upscale(src image.Image, opts Options) (*image.NRGBA, error) {
 	}
 
 	if opts.Sharpen > 0 {
-		strength := clampFloat(opts.Sharpen, 0, 1)
-		dst = sharpenUnsharpMask(dst, strength)
+		dst = sharpenUnsharpMask(dst, clamp(opts.Sharpen, 0, 1))
 	}
 
 	return dst, nil
@@ -252,9 +275,9 @@ func resizeNearest(src *image.NRGBA, dstW, dstH int) *image.NRGBA {
 	yRatio := float64(srcH) / float64(dstH)
 
 	for y := 0; y < dstH; y++ {
-		sy := clampInt(int(float64(y)*yRatio), 0, srcH-1)
+		sy := clamp(int(float64(y)*yRatio), 0, srcH-1)
 		for x := 0; x < dstW; x++ {
-			sx := clampInt(int(float64(x)*xRatio), 0, srcW-1)
+			sx := clamp(int(float64(x)*xRatio), 0, srcW-1)
 			srcOff := sy*src.Stride + sx*4
 			dstOff := y*dst.Stride + x*4
 			copy(dst.Pix[dstOff:dstOff+4], src.Pix[srcOff:srcOff+4])
@@ -276,16 +299,16 @@ func resizeBilinear(src *image.NRGBA, dstW, dstH int) *image.NRGBA {
 		y0 := int(math.Floor(fy))
 		y1 := y0 + 1
 		wy := fy - float64(y0)
-		y0 = clampInt(y0, 0, srcH-1)
-		y1 = clampInt(y1, 0, srcH-1)
+		y0 = clamp(y0, 0, srcH-1)
+		y1 = clamp(y1, 0, srcH-1)
 
 		for x := 0; x < dstW; x++ {
 			fx := (float64(x)+0.5)*xScale - 0.5
 			x0 := int(math.Floor(fx))
 			x1 := x0 + 1
 			wx := fx - float64(x0)
-			x0 = clampInt(x0, 0, srcW-1)
-			x1 = clampInt(x1, 0, srcW-1)
+			x0 = clamp(x0, 0, srcW-1)
+			x1 = clamp(x1, 0, srcW-1)
 
 			o00 := y0*src.Stride + x0*4
 			o10 := y0*src.Stride + x1*4
@@ -310,6 +333,38 @@ func resizeBilinear(src *image.NRGBA, dstW, dstH int) *image.NRGBA {
 	return dst
 }
 
+type kernelContrib struct {
+	idx    int
+	weight float32
+}
+
+func buildContribs(srcSize, dstSize int, radius float64, kernel func(float64) float64) [][]kernelContrib {
+	scale := float64(srcSize) / float64(dstSize)
+	contribs := make([][]kernelContrib, dstSize)
+	for i := 0; i < dstSize; i++ {
+		center := (float64(i)+0.5)*scale - 0.5
+		left := int(math.Floor(center - radius))
+		right := int(math.Ceil(center + radius))
+		var list []kernelContrib
+		var sum float64
+		for s := left; s <= right; s++ {
+			w := kernel(center - float64(s))
+			if w != 0 {
+				list = append(list, kernelContrib{idx: clamp(s, 0, srcSize-1), weight: float32(w)})
+				sum += w
+			}
+		}
+		if sum != 0 {
+			invSum := float32(1.0 / sum)
+			for j := range list {
+				list[j].weight *= invSum
+			}
+		}
+		contribs[i] = list
+	}
+	return contribs
+}
+
 // resizeKernel performs separable 2-pass (horizontal then vertical) kernel resampling.
 func resizeKernel(src *image.NRGBA, dstW, dstH int, radius float64, kernel func(float64) float64) *image.NRGBA {
 	srcW := src.Bounds().Dx()
@@ -317,35 +372,7 @@ func resizeKernel(src *image.NRGBA, dstW, dstH int, radius float64, kernel func(
 
 	// Horizontal pass: src (srcW x srcH) -> tmp (dstW x srcH) stored as float32 RGBA
 	tmp := make([]float32, dstW*srcH*4)
-	xScale := float64(srcW) / float64(dstW)
-
-	// Precompute horizontal weights for each destination x
-	type contrib struct {
-		idx    int
-		weight float32
-	}
-	hContribs := make([][]contrib, dstW)
-	for x := 0; x < dstW; x++ {
-		center := (float64(x)+0.5)*xScale - 0.5
-		left := int(math.Floor(center - radius))
-		right := int(math.Ceil(center + radius))
-		var list []contrib
-		var sum float64
-		for sx := left; sx <= right; sx++ {
-			w := kernel(center - float64(sx))
-			if w != 0 {
-				list = append(list, contrib{idx: clampInt(sx, 0, srcW-1), weight: float32(w)})
-				sum += w
-			}
-		}
-		if sum != 0 {
-			invSum := float32(1.0 / sum)
-			for i := range list {
-				list[i].weight *= invSum
-			}
-		}
-		hContribs[x] = list
-	}
+	hContribs := buildContribs(srcW, dstW, radius, kernel)
 
 	for y := 0; y < srcH; y++ {
 		rowOff := y * src.Stride
@@ -367,49 +394,24 @@ func resizeKernel(src *image.NRGBA, dstW, dstH int, radius float64, kernel func(
 		}
 	}
 
-	// Vertical pass: tmp (dstW x srcH) -> dst (dstW x dstH)
+	// Vertical pass: tmp (dstW x srcH) -> dst (dstW x dstH) using a cache-friendly row accumulator
 	dst := image.NewNRGBA(image.Rect(0, 0, dstW, dstH))
-	yScale := float64(srcH) / float64(dstH)
-
-	vContribs := make([][]contrib, dstH)
-	for y := 0; y < dstH; y++ {
-		center := (float64(y)+0.5)*yScale - 0.5
-		top := int(math.Floor(center - radius))
-		bottom := int(math.Ceil(center + radius))
-		var list []contrib
-		var sum float64
-		for sy := top; sy <= bottom; sy++ {
-			w := kernel(center - float64(sy))
-			if w != 0 {
-				list = append(list, contrib{idx: clampInt(sy, 0, srcH-1), weight: float32(w)})
-				sum += w
-			}
-		}
-		if sum != 0 {
-			invSum := float32(1.0 / sum)
-			for i := range list {
-				list[i].weight *= invSum
-			}
-		}
-		vContribs[y] = list
-	}
+	vContribs := buildContribs(srcH, dstH, radius, kernel)
+	rowBuf := make([]float32, dstW*4)
+	rowLen := dstW * 4
 
 	for y := 0; y < dstH; y++ {
-		dstRowOff := y * dst.Stride
-		for x := 0; x < dstW; x++ {
-			var r, g, b, a float32
-			for _, c := range vContribs[y] {
-				off := (c.idx*dstW + x) * 4
-				r += tmp[off+0] * c.weight
-				g += tmp[off+1] * c.weight
-				b += tmp[off+2] * c.weight
-				a += tmp[off+3] * c.weight
+		clear(rowBuf)
+		for _, c := range vContribs[y] {
+			srcRow := tmp[c.idx*rowLen : (c.idx+1)*rowLen]
+			w := c.weight
+			for i := 0; i < rowLen; i++ {
+				rowBuf[i] += srcRow[i] * w
 			}
-			dstOff := dstRowOff + x*4
-			dst.Pix[dstOff+0] = clampUint8(float64(r))
-			dst.Pix[dstOff+1] = clampUint8(float64(g))
-			dst.Pix[dstOff+2] = clampUint8(float64(b))
-			dst.Pix[dstOff+3] = clampUint8(float64(a))
+		}
+		dstRow := dst.Pix[y*dst.Stride : y*dst.Stride+rowLen]
+		for i := 0; i < rowLen; i++ {
+			dstRow[i] = clampUint8(float64(rowBuf[i]))
 		}
 	}
 
@@ -449,11 +451,11 @@ func sharpenUnsharpMask(src *image.NRGBA, strength float64) *image.NRGBA {
 	amount := strength * 1.2
 
 	for y := 0; y < h; y++ {
-		yPrev := clampInt(y-1, 0, h-1)
-		yNext := clampInt(y+1, 0, h-1)
+		yPrev := clamp(y-1, 0, h-1)
+		yNext := clamp(y+1, 0, h-1)
 		for x := 0; x < w; x++ {
-			xPrev := clampInt(x-1, 0, w-1)
-			xNext := clampInt(x+1, 0, w-1)
+			xPrev := clamp(x-1, 0, w-1)
+			xNext := clamp(x+1, 0, w-1)
 
 			cOff := y*src.Stride + x*4
 			nOff := yPrev*src.Stride + x*4
@@ -478,17 +480,7 @@ func sharpenUnsharpMask(src *image.NRGBA, strength float64) *image.NRGBA {
 	return dst
 }
 
-func clampInt(v, min, max int) int {
-	if v < min {
-		return min
-	}
-	if v > max {
-		return max
-	}
-	return v
-}
-
-func clampFloat(v, min, max float64) float64 {
+func clamp[T int | float64](v, min, max T) T {
 	if v < min {
 		return min
 	}

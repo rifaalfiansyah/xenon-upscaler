@@ -319,7 +319,7 @@
                 <span id="origCardDim" class="font-mono tabular-nums">—</span>
               </div>
               <div id="origViewport"
-                class="checkerboard dark-scroll pan-viewport flex min-h-[200px] max-h-[340px] flex-1 items-center justify-center overflow-hidden rounded-lg lg:min-h-[320px] lg:max-h-[540px]">
+                class="checkerboard dark-scroll flex min-h-[200px] max-h-[340px] flex-1 items-center justify-center overflow-hidden rounded-lg lg:min-h-[320px] lg:max-h-[540px]">
                 <img id="origPreview" alt="Original image"
                   class="block max-h-[320px] max-w-full object-contain select-none lg:max-h-[520px]" draggable="false" />
               </div>
@@ -330,7 +330,7 @@
                 <span id="outCardDim" class="font-mono tabular-nums">—</span>
               </div>
               <div id="outViewport"
-                class="checkerboard dark-scroll pan-viewport flex min-h-[200px] max-h-[340px] flex-1 items-center justify-center overflow-hidden rounded-lg lg:min-h-[320px] lg:max-h-[540px]">
+                class="checkerboard dark-scroll flex min-h-[200px] max-h-[340px] flex-1 items-center justify-center overflow-hidden rounded-lg lg:min-h-[320px] lg:max-h-[540px]">
                 <div id="outPlaceholder" class="flex max-w-[260px] flex-col items-center gap-2 px-4 text-center">
                   <div class="flex h-8 w-8 items-center justify-center rounded-lg border border-ink/8 bg-bg-deep text-ink-muted">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -868,8 +868,16 @@
       }
     }
 
+    const MAX_INPUT_BYTES = 50 * 1024 * 1024;
+
     async function handleFile(file) {
       hideError();
+      if (file.size > MAX_INPUT_BYTES) {
+        const msg = `File too large (${formatBytes(file.size)}). Maximum allowed is 50 MB`;
+        showError(msg);
+        addLog("err", msg);
+        return;
+      }
       const buf = await file.arrayBuffer();
       sourceBytes = new Uint8Array(buf);
       sourceSize = file.size || sourceBytes.byteLength;
