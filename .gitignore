@@ -1,0 +1,7 @@
+# Compiled binaries
+*.exe
+xenon-upscaler
+
+# OS / Editor
+.DS_Store
+Thumbs.db

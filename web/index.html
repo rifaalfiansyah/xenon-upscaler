@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Xenon — Local Image Upscaler</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --color-bg-deep: #0f0f10;
+      --color-bg: #141415;
+      --color-surface: #19191b;
+      --color-raised: #232325;
+      --color-raised-hover: #2a2a2d;
+      --color-ink: #ededed;
+      --color-ink-secondary: #a1a1a6;
+      --color-ink-muted: #85858b;
+      --color-accent: #38bdf8;
+      --color-positive: #4cc38a;
+      --color-negative: #e5484d;
+      --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      --ease-snappy: cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    @layer base {
+      body {
+        font-family: var(--font-sans);
+        background-color: var(--color-bg);
+        color: var(--color-ink);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      :focus-visible {
+        outline: 2px solid var(--color-accent);
+        outline-offset: 2px;
+      }
+    }
+
+    .checkerboard {
+      background: repeating-conic-gradient(#141415 0% 25%, #19191b 0% 50%) 50% / 16px 16px;
+    }
+
+    .slider-clip {
+      clip-path: inset(0 calc(100% - var(--pos, 50%)) 0 0);
+    }
+
+    /* Custom Graphite scrollbars */
+    .dark-scroll {
+      scrollbar-width: thin;
+      scrollbar-color: #2e2e32 #0f0f10;
+    }
+
+    .dark-scroll::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+
+    .dark-scroll::-webkit-scrollbar-track {
+      background: #0f0f10;
+      border-radius: 9999px;
+    }
+
+    .dark-scroll::-webkit-scrollbar-thumb {
+      background: #2e2e32;
+      border: 2px solid #0f0f10;
+      border-radius: 9999px;
+    }
+
+    .dark-scroll::-webkit-scrollbar-thumb:hover {
+      background: #3f3f46;
+    }
+
+    .dark-scroll::-webkit-scrollbar-corner {
+      background: #0f0f10;
+    }
+
+    /* Custom Graphite range sliders */
+    input[type="range"].graphite-range {
+      -webkit-appearance: none;
+      appearance: none;
+      height: 4px;
+      border-radius: 9999px;
+      background: #232325;
+      border: 1px solid rgba(237, 237, 237, 0.08);
+    }
+
+    input[type="range"].graphite-range::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #ededed;
+      border: 1px solid #0f0f10;
+      cursor: pointer;
+      transition: transform 120ms var(--ease-snappy), background-color 150ms var(--ease-snappy);
+    }
+
+    input[type="range"].graphite-range::-webkit-slider-thumb:hover {
+      background: #ffffff;
+      transform: scale(1.1);
+    }
+
+    input[type="range"].graphite-range::-moz-range-thumb {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #ededed;
+      border: 1px solid #0f0f10;
+      cursor: pointer;
+    }
+  </style>
+</head>
+
+<body class="min-h-screen text-[14px] leading-[20px]">
+  <div class="mx-auto flex min-h-screen max-w-[1440px] flex-col">
+    <header class="flex h-14 shrink-0 items-center justify-between border-b border-ink/8 px-4 lg:px-6">
+      <div class="flex items-baseline gap-3">
+        <span class="text-[16px] font-semibold tracking-[-0.01em] text-ink">Xenon</span>
+        <span class="hidden text-[13px] text-ink-muted sm:inline">Local Image Upscaler</span>
+      </div>
+      <div class="inline-flex items-center gap-2 font-mono text-[12px] text-ink-muted tabular-nums">
+        <span id="wasmDot" data-ready="false"
+          class="h-2 w-2 rounded-full bg-ink-muted transition-colors duration-150 ease-[var(--ease-snappy)] data-[ready=true]:bg-positive"></span>
+        <span id="wasmStatus">Loading WASM</span>
+      </div>
+    </header>
+
+    <main class="flex flex-1 flex-col lg:grid lg:grid-cols-[280px_1fr]">
+      <aside class="order-2 flex flex-col gap-4 border-t border-ink/8 bg-bg-deep px-4 pt-4 pb-0 lg:order-1 lg:gap-5 lg:border-t-0 lg:border-r lg:py-5">
+        <div id="dropzone" tabindex="0" role="button" aria-label="Select image file" data-dragover="false"
+          class="flex cursor-pointer flex-col items-center gap-2 rounded-xl border border-dashed border-ink/16 bg-surface px-4 py-4 text-center transition-[border-color,background-color] duration-150 ease-[var(--ease-snappy)] hover:border-accent hover:bg-raised data-[dragover=true]:border-accent data-[dragover=true]:bg-raised lg:py-5">
+          <svg class="text-ink-secondary" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+          <span class="text-[13px] font-medium text-ink">Drop an image or browse</span>
+          <span class="text-[12px] text-ink-muted">PNG, JPEG, GIF, WebP · Ctrl+V</span>
+          <input type="file" id="fileInput" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
+        </div>
+
+        <div class="flex flex-col gap-2">
+          <span class="text-[13px] font-medium text-ink-secondary">Scale factor</span>
+          <div id="scaleGroup" class="grid grid-cols-3 gap-1 rounded-[10px] border border-ink/8 bg-surface p-1">
+            <button type="button" data-scale="2" data-active="true"
+              class="seg-btn h-8 cursor-pointer rounded-[6px] border border-transparent font-mono text-[13px] font-medium text-ink-secondary transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">2x</button>
+            <button type="button" data-scale="3" data-active="false"
+              class="seg-btn h-8 cursor-pointer rounded-[6px] border border-transparent font-mono text-[13px] font-medium text-ink-secondary transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">3x</button>
+            <button type="button" data-scale="4" data-active="false"
+              class="seg-btn h-8 cursor-pointer rounded-[6px] border border-transparent font-mono text-[13px] font-medium text-ink-secondary transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">4x</button>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-2">
+          <span class="text-[13px] font-medium text-ink-secondary">Resampling</span>
+          <div id="algorithmGroup" class="grid grid-cols-2 gap-1 rounded-[10px] border border-ink/8 bg-surface p-1">
+            <button type="button" data-algo="lanczos" data-active="true"
+              class="algo-btn flex cursor-pointer flex-col items-start rounded-[6px] border border-transparent px-2.5 py-2 text-left transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+              <span class="text-[13px] font-medium text-inherit">Lanczos3</span>
+              <span class="text-[11px] text-ink-muted">Photos</span>
+            </button>
+            <button type="button" data-algo="bicubic" data-active="false"
+              class="algo-btn flex cursor-pointer flex-col items-start rounded-[6px] border border-transparent px-2.5 py-2 text-left text-ink-secondary transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+              <span class="text-[13px] font-medium text-inherit">Catmull-Rom</span>
+              <span class="text-[11px] text-ink-muted">Balanced</span>
+            </button>
+            <button type="button" data-algo="bilinear" data-active="false"
+              class="algo-btn flex cursor-pointer flex-col items-start rounded-[6px] border border-transparent px-2.5 py-2 text-left text-ink-secondary transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+              <span class="text-[13px] font-medium text-inherit">Bilinear</span>
+              <span class="text-[11px] text-ink-muted">Smooth</span>
+            </button>
+            <button type="button" data-algo="nearest" data-active="false"
+              class="algo-btn flex cursor-pointer flex-col items-start rounded-[6px] border border-transparent px-2.5 py-2 text-left text-ink-secondary transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+              <span class="text-[13px] font-medium text-inherit">Nearest</span>
+              <span class="text-[11px] text-ink-muted">Pixel art</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-2">
+          <label for="sharpen" class="flex items-center justify-between text-[13px] font-medium text-ink-secondary">
+            <span>Sharpen</span>
+            <span id="sharpenVal" class="font-mono text-[12px] text-ink-muted tabular-nums">20%</span>
+          </label>
+          <input type="range" id="sharpen" min="0" max="100" value="20"
+            class="graphite-range my-2 w-full cursor-pointer" />
+        </div>
+
+        <div class="flex flex-col gap-2">
+          <span class="text-[13px] font-medium text-ink-secondary">Output format</span>
+          <div id="formatGroup" class="grid grid-cols-2 gap-1 rounded-[10px] border border-ink/8 bg-surface p-1">
+            <button type="button" data-format="png" data-active="true"
+              class="fmt-btn h-8 cursor-pointer rounded-[6px] border border-transparent font-mono text-[13px] font-medium text-ink-secondary transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">PNG</button>
+            <button type="button" data-format="jpeg" data-active="false"
+              class="fmt-btn h-8 cursor-pointer rounded-[6px] border border-transparent font-mono text-[13px] font-medium text-ink-secondary transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">JPEG</button>
+          </div>
+        </div>
+
+        <div id="qualityGroup" class="hidden flex-col gap-2">
+          <label for="quality" class="flex items-center justify-between text-[13px] font-medium text-ink-secondary">
+            <span>JPEG quality</span>
+            <span id="qualityVal" class="font-mono text-[12px] text-ink-muted tabular-nums">90</span>
+          </label>
+          <input type="range" id="quality" min="1" max="100" value="90"
+            class="graphite-range my-2 w-full cursor-pointer" />
+        </div>
+
+        <div class="sticky bottom-0 z-20 -mx-4 mt-2 flex flex-col gap-2 border-t border-ink/8 bg-bg-deep/95 px-4 py-3 backdrop-blur-sm lg:static lg:mx-0 lg:mt-auto lg:border-t-0 lg:bg-transparent lg:p-0 lg:pt-2">
+          <div class="grid grid-cols-2 gap-2 lg:flex lg:flex-col">
+            <button id="upscaleBtn" disabled
+              class="inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-lg border border-transparent bg-ink px-3 text-[13px] font-medium text-bg transition-[background-color,opacity,transform] duration-150 ease-[var(--ease-snappy)] hover:bg-white active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40 lg:px-4 lg:text-[14px]">
+              Upscale image
+            </button>
+            <button id="downloadBtn" disabled
+              class="inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-lg border border-ink/8 bg-raised px-3 text-[13px] font-medium text-ink transition-[background-color,border-color,opacity,transform] duration-150 ease-[var(--ease-snappy)] hover:border-ink/16 hover:bg-raised-hover active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40 lg:px-4 lg:text-[14px]">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              <span id="downloadLabel">Download PNG</span>
+            </button>
+          </div>
+          <div id="errorMsg" role="alert" class="hidden text-[13px] text-negative"></div>
+        </div>
+      </aside>
+
+      <section class="order-1 flex min-w-0 flex-col gap-3 p-4 lg:order-2 lg:gap-4 lg:p-6">
+        <div class="flex flex-wrap items-center justify-between gap-3 lg:gap-4">
+          <div class="grid w-full grid-cols-2 gap-x-4 gap-y-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:gap-6">
+            <div class="flex flex-col gap-0.5 lg:gap-1">
+              <span class="text-[12px] text-ink-muted">Original</span>
+              <span id="origStat" class="font-mono text-[13px] font-medium text-ink tabular-nums lg:text-[14px]">—</span>
+            </div>
+            <div class="flex flex-col gap-0.5 lg:gap-1">
+              <span class="text-[12px] text-ink-muted">Upscaled</span>
+              <span id="outStat" class="font-mono text-[13px] font-medium text-ink tabular-nums lg:text-[14px]">—</span>
+            </div>
+            <div class="flex flex-col gap-0.5 lg:gap-1">
+              <span class="text-[12px] text-ink-muted">File size</span>
+              <span id="sizeStat" class="font-mono text-[13px] font-medium text-ink tabular-nums lg:text-[14px]">—</span>
+            </div>
+            <div class="flex flex-col gap-0.5 lg:gap-1">
+              <span class="text-[12px] text-ink-muted">Render time</span>
+              <span id="timeStat" class="font-mono text-[13px] font-medium text-ink tabular-nums lg:text-[14px]">—</span>
+            </div>
+          </div>
+
+          <div class="flex w-full flex-wrap items-center justify-between gap-2 sm:w-auto sm:justify-end">
+            <div id="zoomToggle" class="inline-flex gap-1 rounded-[10px] border border-ink/8 bg-surface p-1">
+              <button type="button" data-zoom="fit" data-active="true"
+                class="zoom-btn h-8 cursor-pointer rounded-[6px] border border-transparent px-2.5 font-mono text-[12px] font-medium text-ink-secondary transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">Fit</button>
+              <button type="button" data-zoom="1" data-active="false"
+                class="zoom-btn h-8 cursor-pointer rounded-[6px] border border-transparent px-2.5 font-mono text-[12px] font-medium text-ink-secondary transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">100%</button>
+              <button type="button" data-zoom="2" data-active="false"
+                class="zoom-btn h-8 cursor-pointer rounded-[6px] border border-transparent px-2.5 font-mono text-[12px] font-medium text-ink-secondary transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">200%</button>
+            </div>
+
+            <div id="viewToggle" class="inline-flex gap-1 rounded-[10px] border border-ink/8 bg-surface p-1">
+              <button type="button" data-view="side-by-side" data-active="true"
+                class="view-btn inline-flex h-8 cursor-pointer items-center gap-2 rounded-[6px] border border-transparent px-3 text-[13px] font-medium text-ink-secondary transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect width="18" height="18" x="3" y="3" rx="2" />
+                  <path d="M12 3v18" />
+                </svg>
+                Side-by-side
+              </button>
+              <button type="button" data-view="slider" data-active="false"
+                class="view-btn inline-flex h-8 cursor-pointer items-center gap-2 rounded-[6px] border border-transparent px-3 text-[13px] font-medium text-ink-secondary transition-[color,background-color,border-color,transform] duration-150 ease-[var(--ease-snappy)] hover:text-ink active:scale-[0.98] data-[active=true]:border-ink/16 data-[active=true]:bg-raised data-[active=true]:text-ink data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M8 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h3" />
+                  <path d="M16 3h3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3" />
+                  <path d="M12 20v2" />
+                  <path d="M12 14v2" />
+                  <path d="M12 8v2" />
+                  <path d="M12 2v2" />
+                </svg>
+                Slider
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div id="previewArea"
+          class="flex min-h-[260px] flex-1 items-center justify-center overflow-hidden rounded-2xl border border-ink/8 bg-surface p-3 lg:min-h-[440px] lg:p-4">
+          <div id="previewEmpty" class="flex max-w-[320px] flex-col items-center gap-3 text-center text-ink-muted">
+            <div class="flex flex-col gap-1">
+              <strong class="text-[14px] font-medium text-ink-secondary">No image loaded</strong>
+              <span class="text-[13px]">Drop an image, paste with Ctrl+V, or select a file to upscale locally</span>
+            </div>
+            <button type="button" id="emptyUploadBtn"
+              class="inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-lg border border-ink/16 bg-raised px-4 text-[13px] font-medium text-ink transition-colors duration-150 ease-[var(--ease-snappy)] hover:bg-raised-hover lg:hidden">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+              Select image
+            </button>
+          </div>
+
+          <div id="compareGrid" class="hidden h-full w-full grid-cols-1 items-center gap-3 md:grid-cols-2 lg:gap-4">
+            <div class="flex h-full flex-col gap-2.5 rounded-xl border border-ink/8 bg-bg-deep p-2.5 lg:gap-3 lg:p-3">
+              <div class="flex items-center justify-between text-[12px] text-ink-muted">
+                <span>Original</span>
+                <span id="origCardDim" class="font-mono tabular-nums">—</span>
+              </div>
+              <div id="origViewport"
+                class="checkerboard dark-scroll pan-viewport flex min-h-[200px] max-h-[340px] flex-1 items-center justify-center overflow-hidden rounded-lg lg:min-h-[320px] lg:max-h-[540px]">
+                <img id="origPreview" alt="Original image"
+                  class="block max-h-[320px] max-w-full object-contain select-none lg:max-h-[520px]" draggable="false" />
+              </div>
+            </div>
+            <div class="flex h-full flex-col gap-2.5 rounded-xl border border-ink/8 bg-bg-deep p-2.5 lg:gap-3 lg:p-3">
+              <div class="flex items-center justify-between text-[12px] text-ink-muted">
+                <span>Upscaled</span>
+                <span id="outCardDim" class="font-mono tabular-nums">—</span>
+              </div>
+              <div id="outViewport"
+                class="checkerboard dark-scroll pan-viewport flex min-h-[200px] max-h-[340px] flex-1 items-center justify-center overflow-hidden rounded-lg lg:min-h-[320px] lg:max-h-[540px]">
+                <div id="outPlaceholder" class="flex max-w-[260px] flex-col items-center gap-2 px-4 text-center">
+                  <div class="flex h-8 w-8 items-center justify-center rounded-lg border border-ink/8 bg-bg-deep text-ink-muted">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <polyline points="15 3 21 3 21 9" />
+                      <polyline points="9 21 3 21 3 15" />
+                      <line x1="21" y1="3" x2="14" y2="10" />
+                      <line x1="3" y1="21" x2="10" y2="14" />
+                    </svg>
+                  </div>
+                  <span id="outPlaceholderTitle" class="text-[13px] font-medium text-ink-secondary">Ready to upscale</span>
+                  <span id="outPlaceholderMeta" class="font-mono text-[12px] text-ink-muted tabular-nums">—</span>
+                </div>
+                <img id="outPreview" alt="Upscaled image"
+                  class="hidden max-h-[320px] max-w-full object-contain select-none lg:max-h-[520px]" draggable="false" />
+              </div>
+            </div>
+          </div>
+
+          <div id="sliderViewport"
+            class="dark-scroll hidden max-h-[380px] w-full flex-1 items-center justify-center overflow-hidden rounded-lg lg:max-h-[580px]">
+            <div id="sliderStage"
+              class="checkerboard relative inline-block shrink-0 max-w-full cursor-ew-resize touch-none select-none overflow-hidden rounded-lg border border-ink/16"
+              style="--pos: 50%;">
+              <img id="sliderOut" alt="Upscaled comparison"
+                class="pointer-events-none block max-h-[360px] max-w-full object-contain lg:max-h-[540px]" />
+              <img id="sliderOrig" alt="Original comparison"
+                class="slider-clip pointer-events-none absolute inset-0 h-full w-full object-contain" />
+              <span
+                class="pointer-events-none absolute top-3 left-3 rounded-[6px] border border-ink/8 bg-bg-deep/85 px-2 py-1 text-[12px] font-medium text-ink">Original</span>
+              <span
+                class="pointer-events-none absolute top-3 right-3 rounded-[6px] border border-ink/8 bg-bg-deep/85 px-2 py-1 text-[12px] font-medium text-ink">Upscaled</span>
+              <div
+                class="pointer-events-none absolute inset-y-0 w-px -translate-x-1/2 bg-ink/80 shadow-[0_0_0_1px_rgba(15,15,16,0.35)]"
+                style="left: var(--pos, 50%);">
+                <div
+                  class="absolute top-1/2 left-1/2 flex h-8 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-ink/40 bg-bg-deep text-ink shadow-[0_2px_8px_rgba(0,0,0,0.45)]"
+                  aria-hidden="true">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="m18 8 4 4-4 4" />
+                    <path d="m6 8-4 4 4 4" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="overflow-hidden rounded-xl border border-ink/8 bg-bg-deep">
+          <div class="flex h-9 items-center justify-between border-b border-ink/8 px-3">
+            <div class="flex items-center gap-2">
+              <svg class="text-ink-muted" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="4 17 10 11 4 5" />
+                <line x1="12" y1="19" x2="20" y2="19" />
+              </svg>
+              <span class="text-[12px] font-medium text-ink-secondary">Activity log</span>
+              <span id="logCount" class="font-mono text-[11px] text-ink-muted tabular-nums">0</span>
+            </div>
+            <div class="flex items-center gap-1">
+              <button type="button" id="logClearBtn" class="cursor-pointer rounded px-2 py-0.5 text-[12px] text-ink-muted transition-colors duration-150 ease-[var(--ease-snappy)] hover:bg-raised hover:text-ink">Clear</button>
+              <button type="button" id="logToggleBtn" class="cursor-pointer rounded px-2 py-0.5 text-[12px] text-ink-muted transition-colors duration-150 ease-[var(--ease-snappy)] hover:bg-raised hover:text-ink">Hide</button>
+            </div>
+          </div>
+          <div id="logBody" class="dark-scroll max-h-28 overflow-y-auto px-3 py-2 font-mono text-[12px] leading-[18px] tabular-nums">
+            <div id="logList" class="flex flex-col gap-0.5"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    let wasmReady = false;
+    let isProcessing = false;
+    let sourceBytes = null;
+    let sourceSize = 0;
+    let outputSize = 0;
+    let sourceName = "upscaled";
+    let outputBlobUrl = null;
+    let origBlobUrl = null;
+    let selectedScale = 2;
+    let selectedAlgorithm = "lanczos";
+    let selectedFormat = "png";
+    let outputFormatUsed = "png";
+    let viewMode = "side-by-side";
+    let zoomMode = "fit";
+    let activeJobId = 0;
+
+    let origNatW = 0;
+    let origNatH = 0;
+    let outNatW = 0;
+    let outNatH = 0;
+
+    const wasmDot = document.getElementById("wasmDot");
+    const wasmStatus = document.getElementById("wasmStatus");
+    const dropzone = document.getElementById("dropzone");
+    const fileInput = document.getElementById("fileInput");
+    const upscaleBtn = document.getElementById("upscaleBtn");
+    const downloadBtn = document.getElementById("downloadBtn");
+    const downloadLabel = document.getElementById("downloadLabel");
+    const sharpenEl = document.getElementById("sharpen");
+    const sharpenVal = document.getElementById("sharpenVal");
+    const qualityGroup = document.getElementById("qualityGroup");
+    const qualityEl = document.getElementById("quality");
+    const qualityVal = document.getElementById("qualityVal");
+    const errorMsg = document.getElementById("errorMsg");
+
+    const origStat = document.getElementById("origStat");
+    const outStat = document.getElementById("outStat");
+    const sizeStat = document.getElementById("sizeStat");
+    const timeStat = document.getElementById("timeStat");
+    const origCardDim = document.getElementById("origCardDim");
+    const outCardDim = document.getElementById("outCardDim");
+    const previewEmpty = document.getElementById("previewEmpty");
+    const compareGrid = document.getElementById("compareGrid");
+    const origViewport = document.getElementById("origViewport");
+    const outViewport = document.getElementById("outViewport");
+    const sliderViewport = document.getElementById("sliderViewport");
+    const sliderStage = document.getElementById("sliderStage");
+    const origPreview = document.getElementById("origPreview");
+    const outPreview = document.getElementById("outPreview");
+    const outPlaceholder = document.getElementById("outPlaceholder");
+    const outPlaceholderTitle = document.getElementById("outPlaceholderTitle");
+    const outPlaceholderMeta = document.getElementById("outPlaceholderMeta");
+    const sliderOrig = document.getElementById("sliderOrig");
+    const sliderOut = document.getElementById("sliderOut");
+    const logBody = document.getElementById("logBody");
+    const logList = document.getElementById("logList");
+    const logCount = document.getElementById("logCount");
+    const logClearBtn = document.getElementById("logClearBtn");
+    const logToggleBtn = document.getElementById("logToggleBtn");
+
+    function addLog(level, message) {
+      const now = new Date();
+      const ts = now.toTimeString().slice(0, 8);
+      const row = document.createElement("div");
+      row.className = "flex items-baseline gap-2";
+
+      const timeEl = document.createElement("span");
+      timeEl.className = "shrink-0 text-ink-muted";
+      timeEl.textContent = ts;
+
+      const tagEl = document.createElement("span");
+      tagEl.className =
+        level === "ok"
+          ? "shrink-0 text-positive"
+          : level === "err"
+          ? "shrink-0 text-negative"
+          : "shrink-0 text-ink-muted";
+      tagEl.textContent = level;
+
+      const msgEl = document.createElement("span");
+      msgEl.className = "break-all text-ink-secondary";
+      msgEl.textContent = message;
+
+      row.append(timeEl, tagEl, msgEl);
+      logList.appendChild(row);
+      logCount.textContent = String(logList.children.length);
+      logBody.scrollTop = logBody.scrollHeight;
+    }
+
+    logClearBtn.addEventListener("click", () => {
+      logList.innerHTML = "";
+      logCount.textContent = "0";
+    });
+
+    logToggleBtn.addEventListener("click", () => {
+      const isHidden = logBody.classList.toggle("hidden");
+      logToggleBtn.textContent = isHidden ? "Show" : "Hide";
+    });
+
+    addLog("info", "Initializing Go WASM worker");
+    const worker = new Worker("worker.js");
+
+    worker.onmessage = (event) => {
+      const msg = event.data;
+      if (!msg) return;
+
+      if (msg.type === "ready") {
+        wasmReady = true;
+        wasmDot.dataset.ready = "true";
+        wasmStatus.textContent = "WASM ready";
+        addLog("ok", "WASM runtime ready");
+        syncActionButtons();
+        return;
+      }
+
+      if (msg.type === "error") {
+        wasmStatus.textContent = "WASM error";
+        showError("Failed to initialize worker: " + msg.error);
+        addLog("err", "Worker init failed: " + msg.error);
+        return;
+      }
+
+      if (msg.type === "result") {
+        if (msg.id !== activeJobId) return;
+        isProcessing = false;
+        upscaleBtn.textContent = "Upscale image";
+
+        if (msg.error) {
+          showError(msg.error);
+          addLog("err", msg.error);
+          updateOutPlaceholder();
+          syncActionButtons();
+          return;
+        }
+
+        const outBytes = msg.data;
+        outputFormatUsed = msg.format || selectedFormat;
+        outputSize = outBytes.byteLength;
+        outNatW = msg.width;
+        outNatH = msg.height;
+
+        if (outputBlobUrl) URL.revokeObjectURL(outputBlobUrl);
+        const mime = outputFormatUsed === "jpeg" ? "image/jpeg" : "image/png";
+        const blob = new Blob([outBytes], { type: mime });
+        outputBlobUrl = URL.createObjectURL(blob);
+
+        const origDim = `${msg.origWidth} × ${msg.origHeight}`;
+        const outDim = `${msg.width} × ${msg.height}`;
+
+        outPlaceholder.classList.add("hidden");
+        outPlaceholder.classList.remove("flex");
+        outPreview.classList.remove("hidden");
+        outPreview.classList.add("block");
+        outPreview.src = outputBlobUrl;
+        sliderOut.src = outputBlobUrl;
+        origStat.textContent = origDim;
+        origCardDim.textContent = origDim;
+        outStat.textContent = outDim;
+        outCardDim.textContent = outDim;
+        sizeStat.textContent = `${formatBytes(sourceSize)} → ${formatBytes(outputSize)}`;
+        timeStat.textContent = `${msg.durationMs.toFixed(1)} ms`;
+        downloadLabel.textContent = outputFormatUsed === "jpeg" ? "Download JPEG" : "Download PNG";
+        addLog("ok", `Upscaled ${msg.origWidth}×${msg.origHeight} → ${msg.width}×${msg.height} (${formatBytes(outputSize)}, ${msg.durationMs.toFixed(1)} ms)`);
+
+        syncActionButtons();
+        renderPreviewMode();
+        applyZoom();
+      }
+    };
+
+    worker.onerror = (err) => {
+      isProcessing = false;
+      upscaleBtn.textContent = "Upscale image";
+      wasmStatus.textContent = "WASM error";
+      showError("Worker error: " + (err.message || "unexpected failure"));
+      syncActionButtons();
+    };
+
+    function syncActionButtons() {
+      upscaleBtn.disabled = !wasmReady || !sourceBytes || isProcessing;
+      downloadBtn.disabled = !outputBlobUrl || isProcessing;
+    }
+
+    function updateOutPlaceholder() {
+      if (isProcessing) {
+        outPlaceholderTitle.textContent = "Upscaling...";
+      } else {
+        outPlaceholderTitle.textContent = "Ready to upscale";
+      }
+
+      const algoNames = {
+        lanczos: "Lanczos3",
+        bicubic: "Catmull-Rom",
+        bilinear: "Bilinear",
+        nearest: "Nearest",
+      };
+      const algoLabel = algoNames[selectedAlgorithm] || selectedAlgorithm;
+      const fmtLabel = selectedFormat.toUpperCase();
+
+      if (origNatW > 0 && origNatH > 0) {
+        const targetW = Math.round(origNatW * selectedScale);
+        const targetH = Math.round(origNatH * selectedScale);
+        outPlaceholderMeta.textContent = `${targetW} × ${targetH} · ${algoLabel} · ${fmtLabel}`;
+      } else {
+        outPlaceholderMeta.textContent = `${selectedScale}x · ${algoLabel} · ${fmtLabel}`;
+      }
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes) return "—";
+      if (bytes < 1024) return `${bytes} B`;
+      const kb = bytes / 1024;
+      if (kb < 1024) return `${kb.toFixed(1)} KB`;
+      return `${(kb / 1024).toFixed(2)} MB`;
+    }
+
+    document.querySelectorAll("#scaleGroup .seg-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#scaleGroup .seg-btn").forEach((b) => (b.dataset.active = "false"));
+        btn.dataset.active = "true";
+        selectedScale = Number(btn.dataset.scale);
+        updateOutPlaceholder();
+      });
+    });
+
+    document.querySelectorAll("#algorithmGroup .algo-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#algorithmGroup .algo-btn").forEach((b) => (b.dataset.active = "false"));
+        btn.dataset.active = "true";
+        selectedAlgorithm = btn.dataset.algo;
+        updateOutPlaceholder();
+        applyZoom();
+      });
+    });
+
+    document.querySelectorAll("#formatGroup .fmt-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#formatGroup .fmt-btn").forEach((b) => (b.dataset.active = "false"));
+        btn.dataset.active = "true";
+        selectedFormat = btn.dataset.format;
+        if (selectedFormat === "jpeg") {
+          qualityGroup.classList.remove("hidden");
+          qualityGroup.classList.add("flex");
+        } else {
+          qualityGroup.classList.add("hidden");
+          qualityGroup.classList.remove("flex");
+        }
+        updateOutPlaceholder();
+      });
+    });
+
+    sharpenEl.addEventListener("input", () => {
+      sharpenVal.textContent = sharpenEl.value + "%";
+    });
+
+    qualityEl.addEventListener("input", () => {
+      qualityVal.textContent = qualityEl.value;
+    });
+
+    dropzone.addEventListener("click", () => fileInput.click());
+    dropzone.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        fileInput.click();
+      }
+    });
+    dropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropzone.dataset.dragover = "true";
+    });
+    dropzone.addEventListener("dragleave", () => {
+      dropzone.dataset.dragover = "false";
+    });
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.dataset.dragover = "false";
+      if (e.dataTransfer.files.length > 0) {
+        handleFile(e.dataTransfer.files[0]);
+      }
+    });
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files.length > 0) {
+        handleFile(fileInput.files[0]);
+      }
+    });
+
+    // Paste image directly from clipboard (Ctrl+V)
+    document.addEventListener("paste", (e) => {
+      const items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type && item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) {
+            e.preventDefault();
+            handleFile(file);
+            return;
+          }
+        }
+      }
+    });
+
+    document.querySelectorAll("#viewToggle .view-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#viewToggle .view-btn").forEach((b) => (b.dataset.active = "false"));
+        btn.dataset.active = "true";
+        viewMode = btn.dataset.view;
+        renderPreviewMode();
+        applyZoom();
+      });
+    });
+
+    document.querySelectorAll("#zoomToggle .zoom-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#zoomToggle .zoom-btn").forEach((b) => (b.dataset.active = "false"));
+        btn.dataset.active = "true";
+        zoomMode = btn.dataset.zoom;
+        applyZoom();
+      });
+    });
+
+    const emptyUploadBtn = document.getElementById("emptyUploadBtn");
+    if (emptyUploadBtn) {
+      emptyUploadBtn.addEventListener("click", () => fileInput.click());
+    }
+
+    function applyZoom() {
+      const isZoomed = zoomMode !== "fit";
+      const factor = zoomMode === "2" ? 2 : 1;
+      const pixelStyle = selectedAlgorithm === "nearest" ? "pixelated" : "auto";
+
+      origPreview.style.imageRendering = pixelStyle;
+      outPreview.style.imageRendering = pixelStyle;
+      sliderOrig.style.imageRendering = pixelStyle;
+      sliderOut.style.imageRendering = pixelStyle;
+
+      // Side-by-side viewports
+      if (isZoomed && origNatW > 0) {
+        origViewport.classList.remove("items-center", "justify-center", "overflow-hidden");
+        origViewport.classList.add("items-start", "justify-start", "overflow-auto", "cursor-grab");
+        origPreview.classList.remove("max-h-[320px]", "lg:max-h-[520px]", "max-w-full", "object-contain");
+        origPreview.style.width = `${origNatW * factor}px`;
+        origPreview.style.height = `${origNatH * factor}px`;
+      } else {
+        origViewport.classList.add("items-center", "justify-center", "overflow-hidden");
+        origViewport.classList.remove("items-start", "justify-start", "overflow-auto", "cursor-grab");
+        origPreview.classList.add("max-h-[320px]", "lg:max-h-[520px]", "max-w-full", "object-contain");
+        origPreview.style.width = "";
+        origPreview.style.height = "";
+      }
+
+      if (isZoomed && outNatW > 0) {
+        outViewport.classList.remove("items-center", "justify-center", "overflow-hidden");
+        outViewport.classList.add("items-start", "justify-start", "overflow-auto", "cursor-grab");
+        outPreview.classList.remove("max-h-[320px]", "lg:max-h-[520px]", "max-w-full", "object-contain");
+        outPreview.style.width = `${outNatW * factor}px`;
+        outPreview.style.height = `${outNatH * factor}px`;
+      } else {
+        outViewport.classList.add("items-center", "justify-center", "overflow-hidden");
+        outViewport.classList.remove("items-start", "justify-start", "overflow-auto", "cursor-grab");
+        outPreview.classList.add("max-h-[320px]", "lg:max-h-[520px]", "max-w-full", "object-contain");
+        outPreview.style.width = "";
+        outPreview.style.height = "";
+      }
+
+      // Slider viewport
+      if (isZoomed) {
+        sliderViewport.classList.remove("items-center", "justify-center", "overflow-hidden");
+        sliderViewport.classList.add("items-start", "justify-start", "overflow-auto");
+        const baseW = outNatW > 0 ? outNatW : origNatW;
+        const baseH = outNatH > 0 ? outNatH : origNatH;
+        if (baseW > 0) {
+          sliderStage.classList.remove("max-w-full");
+          sliderOut.classList.remove("max-h-[360px]", "lg:max-h-[540px]", "max-w-full", "object-contain");
+          sliderOut.style.width = `${baseW * factor}px`;
+          sliderOut.style.height = `${baseH * factor}px`;
+        }
+      } else {
+        sliderViewport.classList.add("items-center", "justify-center", "overflow-hidden");
+        sliderViewport.classList.remove("items-start", "justify-start", "overflow-auto");
+        sliderStage.classList.add("max-w-full");
+        sliderOut.classList.add("max-h-[360px]", "lg:max-h-[540px]", "max-w-full", "object-contain");
+        sliderOut.style.width = "";
+        sliderOut.style.height = "";
+      }
+    }
+
+    // Drag-to-pan for side-by-side viewports when zoomed
+    [origViewport, outViewport].forEach((vp) => {
+      let panning = false;
+      let startX = 0;
+      let startY = 0;
+      let scrollLeft = 0;
+      let scrollTop = 0;
+
+      vp.addEventListener("pointerdown", (e) => {
+        if (zoomMode === "fit") return;
+        panning = true;
+        vp.setPointerCapture(e.pointerId);
+        vp.classList.add("cursor-grabbing");
+        startX = e.clientX;
+        startY = e.clientY;
+        scrollLeft = vp.scrollLeft;
+        scrollTop = vp.scrollTop;
+      });
+
+      vp.addEventListener("pointermove", (e) => {
+        if (!panning) return;
+        vp.scrollLeft = scrollLeft - (e.clientX - startX);
+        vp.scrollTop = scrollTop - (e.clientY - startY);
+      });
+
+      const stopPan = () => {
+        panning = false;
+        vp.classList.remove("cursor-grabbing");
+      };
+      vp.addEventListener("pointerup", stopPan);
+      vp.addEventListener("pointercancel", stopPan);
+    });
+
+    function updateSliderPos(clientX) {
+      const rect = sliderStage.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const pct = Math.min(100, Math.max(0, ((clientX - rect.left) / rect.width) * 100));
+      sliderStage.style.setProperty("--pos", pct.toFixed(2) + "%");
+    }
+
+    let isDraggingSlider = false;
+    sliderStage.addEventListener("pointerdown", (e) => {
+      isDraggingSlider = true;
+      sliderStage.setPointerCapture(e.pointerId);
+      updateSliderPos(e.clientX);
+    });
+    sliderStage.addEventListener("pointermove", (e) => {
+      if (!isDraggingSlider) return;
+      updateSliderPos(e.clientX);
+    });
+    sliderStage.addEventListener("pointerup", () => { isDraggingSlider = false; });
+    sliderStage.addEventListener("pointercancel", () => { isDraggingSlider = false; });
+
+    function renderPreviewMode() {
+      if (!sourceBytes) {
+        previewEmpty.classList.remove("hidden");
+        previewEmpty.classList.add("flex");
+        compareGrid.classList.add("hidden");
+        compareGrid.classList.remove("grid");
+        sliderViewport.classList.add("hidden");
+        sliderViewport.classList.remove("flex");
+        return;
+      }
+      previewEmpty.classList.add("hidden");
+      previewEmpty.classList.remove("flex");
+      if (viewMode === "slider") {
+        compareGrid.classList.add("hidden");
+        compareGrid.classList.remove("grid");
+        sliderViewport.classList.remove("hidden");
+        sliderViewport.classList.add("flex");
+      } else {
+        sliderViewport.classList.add("hidden");
+        sliderViewport.classList.remove("flex");
+        compareGrid.classList.remove("hidden");
+        compareGrid.classList.add("grid");
+      }
+    }
+
+    async function handleFile(file) {
+      hideError();
+      const buf = await file.arrayBuffer();
+      sourceBytes = new Uint8Array(buf);
+      sourceSize = file.size || sourceBytes.byteLength;
+      outputSize = 0;
+      sourceName = (file.name ? file.name.replace(/\.[^.]+$/, "") : "") || "image";
+
+      if (origBlobUrl) URL.revokeObjectURL(origBlobUrl);
+      if (outputBlobUrl) {
+        URL.revokeObjectURL(outputBlobUrl);
+        outputBlobUrl = null;
+      }
+
+      origBlobUrl = URL.createObjectURL(file);
+      origPreview.src = origBlobUrl;
+      sliderOrig.src = origBlobUrl;
+      sliderOut.src = origBlobUrl;
+      outNatW = 0;
+      outNatH = 0;
+
+      origPreview.onload = () => {
+        origNatW = origPreview.naturalWidth;
+        origNatH = origPreview.naturalHeight;
+        const dim = `${origNatW} × ${origNatH}`;
+        origStat.textContent = dim;
+        origCardDim.textContent = dim;
+        updateOutPlaceholder();
+        applyZoom();
+        addLog("info", `Loaded ${file.name || "clipboard image"} (${origNatW}×${origNatH}, ${formatBytes(sourceSize)})`);
+      };
+
+      outPreview.removeAttribute("src");
+      outPreview.classList.add("hidden");
+      outPreview.classList.remove("block");
+      outPlaceholder.classList.remove("hidden");
+      outPlaceholder.classList.add("flex");
+      updateOutPlaceholder();
+      outStat.textContent = "—";
+      outCardDim.textContent = "—";
+      sizeStat.textContent = `${formatBytes(sourceSize)} → —`;
+      timeStat.textContent = "—";
+      downloadLabel.textContent = selectedFormat === "jpeg" ? "Download JPEG" : "Download PNG";
+
+      syncActionButtons();
+      renderPreviewMode();
+    }
+
+    upscaleBtn.addEventListener("click", () => {
+      if (!wasmReady || !sourceBytes || isProcessing) return;
+      hideError();
+      isProcessing = true;
+      upscaleBtn.textContent = "Upscaling...";
+      updateOutPlaceholder();
+      syncActionButtons();
+
+      const jobId = ++activeJobId;
+      const bytesCopy = new Uint8Array(sourceBytes);
+      addLog("info", `Upscaling ${selectedScale}x · ${selectedAlgorithm} · sharpen ${sharpenEl.value}% · ${selectedFormat.toUpperCase()}`);
+
+      worker.postMessage(
+        {
+          type: "upscale",
+          id: jobId,
+          bytes: bytesCopy,
+          scale: selectedScale,
+          algorithm: selectedAlgorithm,
+          sharpen: Number(sharpenEl.value) / 100.0,
+          format: selectedFormat,
+          quality: Number(qualityEl.value),
+        },
+        [bytesCopy.buffer]
+      );
+    });
+
+    downloadBtn.addEventListener("click", () => {
+      if (!outputBlobUrl) return;
+      const ext = outputFormatUsed === "jpeg" ? "jpg" : "png";
+      const filename = `${sourceName}-${selectedScale}x-${selectedAlgorithm}.${ext}`;
+      const a = document.createElement("a");
+      a.href = outputBlobUrl;
+      a.download = filename;
+      a.click();
+      addLog("info", `Downloaded ${filename}`);
+    });
+
+    function showError(msg) {
+      errorMsg.textContent = msg;
+      errorMsg.classList.remove("hidden");
+    }
+
+    function hideError() {
+      errorMsg.classList.add("hidden");
+      errorMsg.textContent = "";
+    }
+  </script>
+</body>
+
+</html>
